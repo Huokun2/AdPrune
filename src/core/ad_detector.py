@@ -55,7 +55,6 @@ def _layer2_duration(info: M3U8Info, rule: AdDetectionRule):
     if info.discontinuity_positions:
         # 以 DISCONTINUITY 为边界，逐块判断
         boundaries = sorted(info.discontinuity_positions)
-        real_boundary_count = len(boundaries)
         if boundaries[-1] < n:
             boundaries.append(n)
 
@@ -74,18 +73,13 @@ def _layer2_duration(info: M3U8Info, rule: AdDetectionRule):
             anomalous_count = sum(1 for s in block if _is_anomalous(s))
             is_anomalous_block = anomalous_count >= max(1, len(block) // 2)
 
-            # 尾块（最后一个 DISCONTINUITY 之后）：仅凭时长命中才标记，异常比例不触发
-            # 正片首块（第一个 DISCONTINUITY 之前）：跳过
-            is_tail = (i >= real_boundary_count - 1) and len(info.discontinuity_positions) > 1
+            # 正片首块（第一个 DISCONTINUITY 之前）：跳过，避免误判片头
             is_head = (i == 0) and len(info.discontinuity_positions) > 1
 
             if is_head:
                 continue
 
-            if is_tail:
-                should_flag = hit_target
-            else:
-                should_flag = hit_target or is_anomalous_block
+            should_flag = hit_target or is_anomalous_block
 
             if should_flag:
                 for s in block:
@@ -119,13 +113,39 @@ def _layer2_duration(info: M3U8Info, rule: AdDetectionRule):
 
 
 def _layer3_discontinuity(info: M3U8Info):
-    """第三层：DISCONTINUITY 边界锚点 —— 确认前两层的标记"""
+    """第三层：DISCONTINUITY 边界锚定 ——
+    广告块通常被 DISCONTINUITY 边界分隔，据此校验前两层标记的广告块边界
+    是否与断点对齐，为识别结果补充锚定依据（仅标注，不改变标记结果）。"""
     if not info.discontinuity_positions:
         return
 
+    boundaries = set(info.discontinuity_positions)
+    n = len(info.segments)
+
+    # 将连续广告片段分组为广告块
+    blocks: list[list[Segment]] = []
+    current: list[Segment] = []
     for seg in info.segments:
-        if seg.is_ad and seg.ad_reason and "DISCONTINUITY" not in seg.ad_reason:
-            seg.ad_reason += " + DISCONTINUITY 确认"
+        if seg.is_ad:
+            current.append(seg)
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+
+    for block in blocks:
+        start_idx = block[0].index
+        end_idx = block[-1].index
+
+        # 广告块起始应位于断点之后（或视频开头），结束应位于断点处（或视频末尾）
+        anchored_start = (start_idx == 1) or ((start_idx - 1) in boundaries)
+        anchored_end = (end_idx == n) or (end_idx in boundaries)
+
+        note = "DISCONTINUITY 锚定" if (anchored_start and anchored_end) else "DISCONTINUITY 未对齐"
+        for seg in block:
+            if "DISCONTINUITY" not in seg.ad_reason:
+                seg.ad_reason += f" + {note}"
 
 
 def analyze_ads(info: M3U8Info) -> list[dict]:
