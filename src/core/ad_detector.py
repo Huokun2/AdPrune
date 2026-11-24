@@ -73,13 +73,21 @@ def _layer2_duration(info: M3U8Info, rule: AdDetectionRule):
             anomalous_count = sum(1 for s in block if _is_anomalous(s))
             is_anomalous_block = anomalous_count >= max(1, len(block) // 2)
 
-            # 正片首块（第一个 DISCONTINUITY 之前）：跳过，避免误判片头
-            is_head = (i == 0) and len(info.discontinuity_positions) > 1
+            # 首块：仅当第一个断点位于视频开头（position 0）时才跳过，
+            # 此时首块是正片开头；若第一个断点在中间，首块可能是广告，不能跳过
+            is_head = (i == 0) and (boundaries[0] == 0) and len(info.discontinuity_positions) > 1
+            # 尾块：最后一个断点之后的块，短块判断时排除，避免误判片尾
+            is_tail_block = (i == len(boundaries) - 2)
+            # 短块：被断点包围、时长很短的中间块，多为中插广告
+            is_short_block = (
+                (not is_head) and (not is_tail_block)
+                and (block_dur <= rule.short_block_max_duration)
+            )
 
             if is_head:
                 continue
 
-            should_flag = hit_target or is_anomalous_block
+            should_flag = hit_target or is_anomalous_block or is_short_block
 
             if should_flag:
                 for s in block:
@@ -87,8 +95,10 @@ def _layer2_duration(info: M3U8Info, rule: AdDetectionRule):
                         s.is_ad = True
                         if hit_target:
                             s.ad_reason = f"时长校验 (DISCONTINUITY 间 {len(block)}段×{block_dur:.1f}s)"
-                        else:
+                        elif is_anomalous_block:
                             s.ad_reason = f"DISCONTINUITY 间异常块 ({anomalous_count}/{len(block)}段异常)"
+                        else:
+                            s.ad_reason = f"DISCONTINUITY 间短块 ({len(block)}段×{block_dur:.1f}s)"
     else:
         # 无 DISCONTINUITY：滑动窗口扫描，要求半数以上分片异常
         for dur_target in sorted(rule.typical_durations):

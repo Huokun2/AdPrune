@@ -46,6 +46,7 @@ class AdDetectionRule:
     ])
     typical_durations: list[float] = field(default_factory=lambda: [15.0, 30.0, 60.0])
     duration_tolerance: float = 1.0  # 时长容差（秒）
+    short_block_max_duration: float = 90.0  # 短块阈值（秒）：被断点包围且时长不超过该值的块视为广告
 
 
 @dataclass
